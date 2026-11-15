@@ -11,32 +11,68 @@ services:
       - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
       - umap_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+    # make sure the database is also restarted after a reboot of the host
+    restart: always
 
   app:
     # Check https://hub.docker.com/r/umap/umap/tags to find the latest version
-    image: umap/umap:2.9.3
-    ports:
-      # modify the external port (8001, on the left) if desired, but make sure it matches SITE_URL, below
-      - "8001:8000"
+    image: umap/umap:3.8.1
     environment:
       - DATABASE_URL=postgis://postgres@db/postgres
-      - SITE_URL=https://localhost:8001/
+      # modify the port (8001) if desired, but make sure it matches the proxy ports, below
+      - SITE_URL=http://localhost:8001/
+      - SECRET_KEY=change-me
       - STATIC_ROOT=/srv/umap/static
       - MEDIA_ROOT=/srv/umap/uploads
+      - AJAX_PROXY_CACHE_DIR=/srv/umap/proxy-cache
     volumes:
       - umap_userdata:/srv/umap/uploads
-      # FIX the path on the left, below, to your location 
+      - umap_static:/srv/umap/static
+      - umap_proxy_cache:/srv/umap/proxy-cache
+      # FIX the path on the left, below, to your location
       # OPTIONAL, you can comment the line below out for default
       # values to apply
       - /home/ubuntu/umap.conf:/etc/umap/umap.conf
     restart: always
     depends_on:
-      - db
-    
+      db:
+        condition: service_healthy
+
+  proxy:
+    image: nginx:latest
+    ports:
+      # modify the external port (8001, on the left) if desired, but make sure it matches SITE_URL, above
+      - "8001:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./umap-snippet.conf:/etc/nginx/snippets/umap.conf:ro
+      - umap_static:/static:ro
+      - umap_userdata:/data:ro
+    restart: always
+    depends_on:
+      - app
+
 volumes:
   umap_userdata:
+  umap_static:
+  umap_proxy_cache:
   umap_db:
 ```
+
+Since uMap 3.0, static files (JS, CSS, icons…) are not served by uMap itself
+anymore (unless `DEBUG` is set), so a web server must serve them. This is what
+the `proxy` service does: download
+[`nginx.conf`](https://github.com/umap-project/umap/blob/master/docker/nginx.conf)
+and [`umap-snippet.conf`](https://github.com/umap-project/umap/blob/master/docker/umap-snippet.conf)
+from the repository and put them next to your `docker-compose.yml`.
+If you already have a reverse proxy in front of uMap, make sure it serves the
+`STATIC_ROOT` folder under `/static/` (see the [nginx page](nginx.md)).
+
+Since uMap 3.8, the [`AJAX_PROXY_CACHE_DIR`](../config/settings.md#ajax_proxy_cache_dir)
+setting is mandatory: uMap refuses to start if this directory is missing or not writable.
 
 Note that you’ll have to set a [`SECRET_KEY`](https://docs.djangoproject.com/en/5.0/ref/settings/#secret-key) environment variable that must be secret and unique. One way to generate it is through the `secrets` module from Python:
 
